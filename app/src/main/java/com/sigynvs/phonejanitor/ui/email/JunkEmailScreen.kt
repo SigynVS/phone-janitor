@@ -29,6 +29,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -57,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.sigynvs.phonejanitor.email.GmailBulkMover
 import com.sigynvs.phonejanitor.ui.common.EmptyState
 import com.sigynvs.phonejanitor.ui.common.SectionCard
 import com.sigynvs.phonejanitor.ui.common.appContainer
@@ -69,8 +71,10 @@ fun JunkEmailScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val vm: JunkEmailViewModel = viewModel(factory = JunkEmailViewModel.factory(context.appContainer))
     val state by vm.state.collectAsStateWithLifecycle()
+    val bulkState by vm.bulkState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var showConfirm by rememberSaveable { mutableStateOf(false) }
+    var showBulkConfirm by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.movedCount) {
         val n = state.movedCount ?: return@LaunchedEffect
@@ -83,6 +87,18 @@ fun JunkEmailScreen(onBack: () -> Unit) {
         val e = state.error ?: return@LaunchedEffect
         snackbar.showSnackbar(e)
         vm.consumeError()
+    }
+    LaunchedEffect(bulkState) {
+        val done = bulkState as? GmailBulkMover.State.Done ?: return@LaunchedEffect
+        snackbar.showSnackbar(
+            buildString {
+                append("Moved ${done.moved}")
+                if (done.total > 0) append(" of ${done.total}")
+                append(" to Gmail Trash.")
+                done.error?.let { append(" $it") }
+            },
+        )
+        vm.acknowledgeBulk()
     }
 
     Scaffold(
@@ -98,7 +114,7 @@ fun JunkEmailScreen(onBack: () -> Unit) {
         },
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
-            if (state.rows.isNotEmpty()) {
+            if (state.rows.isNotEmpty() && bulkState !is GmailBulkMover.State.Running) {
                 MoveBar(
                     count = state.selectedCount,
                     bytes = state.selectedBytes,
@@ -113,8 +129,16 @@ fun JunkEmailScreen(onBack: () -> Unit) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            val running = bulkState as? GmailBulkMover.State.Running
             when {
                 state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+
+                running != null -> BulkProgress(
+                    moved = running.moved,
+                    total = running.total,
+                    onStop = vm::cancelBulk,
+                    modifier = Modifier.align(Alignment.Center),
+                )
 
                 !state.configured -> SetupCard(
                     verifying = state.busy == MailBusy.Verifying,
@@ -169,6 +193,16 @@ fun JunkEmailScreen(onBack: () -> Unit) {
                                         Text(if (state.allSelected) "Select none" else "Select all")
                                     }
                                 }
+                                if (state.hasMoreThanShown) {
+                                    OutlinedButton(
+                                        onClick = { showBulkConfirm = true },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                                    ) {
+                                        Text("Move all ${state.totalMatched} to Trash (skip review)")
+                                    }
+                                }
                             }
                             LazyColumn(
                                 modifier = Modifier
@@ -211,6 +245,63 @@ fun JunkEmailScreen(onBack: () -> Unit) {
                 TextButton(onClick = { showConfirm = false }) { Text("Cancel") }
             },
         )
+    }
+
+    if (showBulkConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBulkConfirm = false },
+            title = { Text("Move all ${state.totalMatched}?") },
+            text = {
+                Text(
+                    "Move every one of the ${state.totalMatched} messages matching this search into " +
+                        "Gmail's Trash, without reviewing them individually. They're recoverable in " +
+                        "Trash for 30 days. This can take several minutes — keep this screen open.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBulkConfirm = false
+                    vm.moveAllMatching()
+                }) { Text("Move all") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBulkConfirm = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun BulkProgress(
+    moved: Int,
+    total: Int,
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text("Moving to Gmail Trash", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (total > 0) "$moved of $total" else "$moved so far",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        if (total > 0) {
+            LinearProgressIndicator(
+                progress = { (moved.toFloat() / total).coerceIn(0f, 1f) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp),
+            )
+        } else {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(6.dp))
+        }
+        OutlinedButton(onClick = onStop) { Text("Stop") }
     }
 }
 

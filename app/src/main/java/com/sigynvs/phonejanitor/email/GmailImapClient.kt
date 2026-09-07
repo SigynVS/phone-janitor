@@ -5,7 +5,9 @@ import com.sun.mail.iap.Response
 import com.sun.mail.imap.IMAPFolder
 import com.sun.mail.imap.protocol.IMAPProtocol
 import com.sun.mail.imap.protocol.IMAPResponse
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.util.Properties
 import javax.mail.AuthenticationFailedException
@@ -32,6 +34,13 @@ data class MailSummary(
 data class MailSearchResult(
     val summaries: List<MailSummary>,
     val totalMatched: Int,
+)
+
+/** Result of draining a whole query into Trash. [error] non-null means it stopped early and can resume. */
+data class MoveAllOutcome(
+    val moved: Int,
+    val total: Int,
+    val error: String?,
 )
 
 sealed class GmailError(message: String) : Exception(message) {
@@ -175,6 +184,67 @@ class GmailImapClient {
                 runCatching { store.close() }
             }
         }
+
+    /**
+     * Moves *every* message matching [rawGmailQuery] into Trash, in one long session, reporting
+     * running progress. Cancellable between chunks. If a chunk fails mid-run it stops and returns
+     * a partial count with [MoveAllOutcome.error] set — running it again resumes (moved messages
+     * have left All Mail, so the search returns fewer).
+     */
+    suspend fun moveAllMatching(
+        address: String,
+        appPassword: String,
+        rawGmailQuery: String,
+        onProgress: (moved: Int, total: Int) -> Unit,
+    ): MoveAllOutcome = withContext(Dispatchers.IO) {
+        val store = connect(address, appPassword)
+        try {
+            val allMail = openFolder(store, "\\All", "[Gmail]/All Mail", Folder.READ_WRITE)
+            try {
+                val trash = resolveFolder(store, "\\Trash", "[Gmail]/Trash")
+                val uids = rawUidSearch(allMail, rawGmailQuery)
+                val total = uids.size
+                if (total == 0) return@withContext MoveAllOutcome(0, 0, null)
+
+                var moved = 0
+                var failure: String? = null
+                for (chunk in uids.chunked(MOVE_CHUNK)) {
+                    ensureActive()
+                    try {
+                        val messages = (allMail as UIDFolder)
+                            .getMessagesByUID(chunk.toLongArray())
+                            .filterNotNull()
+                            .toTypedArray()
+                        if (messages.isNotEmpty()) {
+                            allMail.copyMessages(messages, trash)
+                            runCatching {
+                                allMail.setFlags(messages, Flags(Flags.Flag.DELETED), true)
+                                allMail.expunge()
+                            }
+                            moved += messages.size
+                        }
+                        onProgress(moved, total)
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (me: MessagingException) {
+                        failure = me.toGmailError().message
+                        break
+                    }
+                }
+                MoveAllOutcome(moved, total, failure)
+            } finally {
+                runCatching { allMail.close(true) }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AuthenticationFailedException) {
+            throw GmailError.Auth()
+        } catch (e: MessagingException) {
+            throw e.toGmailError()
+        } finally {
+            runCatching { store.close() }
+        }
+    }
 
     // --- internals ------------------------------------------------------
 

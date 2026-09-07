@@ -7,6 +7,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.sigynvs.phonejanitor.di.AppContainer
 import com.sigynvs.phonejanitor.email.EmailCredentialStore
+import com.sigynvs.phonejanitor.email.GmailBulkMover
 import com.sigynvs.phonejanitor.email.GmailError
 import com.sigynvs.phonejanitor.email.GmailImapClient
 import com.sigynvs.phonejanitor.email.MailSummary
@@ -48,10 +49,25 @@ class JunkEmailViewModel(
     private val gmail: GmailImapClient,
     private val credentials: EmailCredentialStore,
     private val settings: SettingsRepository,
+    private val bulkMover: GmailBulkMover,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(JunkEmailUiState())
     val state: StateFlow<JunkEmailUiState> = _state.asStateFlow()
+
+    val bulkState: StateFlow<GmailBulkMover.State> = bulkMover.state
+
+    fun moveAllMatching() {
+        val s = _state.value
+        if (!s.idle || !s.configured || bulkMover.isRunning) return
+        viewModelScope.launch { settings.setGmailQuery(s.query) }
+        bulkMover.start(s.query, s.totalMatched)
+        _state.update { it.copy(rows = emptyList(), searched = false, totalMatched = 0) }
+    }
+
+    fun cancelBulk() = bulkMover.cancel()
+
+    fun acknowledgeBulk() = bulkMover.acknowledge()
 
     init {
         viewModelScope.launch {
@@ -203,6 +219,7 @@ class JunkEmailViewModel(
                     gmail = container.gmailClient,
                     credentials = container.emailCredentialStore,
                     settings = container.settings,
+                    bulkMover = container.gmailBulkMover,
                 )
             }
         }

@@ -4,6 +4,7 @@ import android.content.Context
 import com.sigynvs.phonejanitor.BuildConfig
 import com.sigynvs.phonejanitor.cache.CacheInspector
 import com.sigynvs.phonejanitor.email.EmailCredentialStore
+import com.sigynvs.phonejanitor.email.GmailBulkMover
 import com.sigynvs.phonejanitor.email.GmailImapClient
 import com.sigynvs.phonejanitor.quarantine.QuarantineDatabase
 import com.sigynvs.phonejanitor.quarantine.QuarantineStore
@@ -44,6 +45,9 @@ class AppContainer(context: Context) {
 
     val emailCredentialStore: EmailCredentialStore by lazy { EmailCredentialStore(appContext) }
     val gmailClient: GmailImapClient by lazy { GmailImapClient() }
+    val gmailBulkMover: GmailBulkMover by lazy {
+        GmailBulkMover(gmailClient, emailCredentialStore, appScope)
+    }
     val cacheInspector: CacheInspector by lazy { CacheInspector(appContext) }
 
     val updateRepository: UpdateRepository by lazy {
