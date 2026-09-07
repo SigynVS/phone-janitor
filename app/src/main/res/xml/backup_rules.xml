@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Never back up stored Gmail credentials or the quarantine ledger. -->
+    <exclude domain="sharedpref" path="email_credentials.xml" />
+    <exclude domain="database" path="phone_janitor.db" />
+</full-backup-content>
