@@ -1,21 +1,23 @@
 package com.sigynvs.phonejanitor.email
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import android.content.Context
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 
 /**
- * App-scoped controller for "move every message matching this query into Trash". Lives above the
- * screen so leaving Junk Email doesn't kill a 10-minute drain of an 80k-message backlog.
+ * Starts / stops the "drain a whole Gmail search into Trash" job (a foreground-service
+ * [BulkMoveWorker]) and holds the observable progress. The worker writes progress back here via
+ * [publishProgress] / [publishDone].
  */
-class GmailBulkMover(
-    private val gmail: GmailImapClient,
-    private val credentials: EmailCredentialStore,
-    private val scope: CoroutineScope,
-) {
+class GmailBulkMover(context: Context) {
+
+    private val appContext = context.applicationContext
+
     sealed interface State {
         data object Idle : State
         data class Running(val moved: Int, val total: Int) : State
@@ -25,44 +27,47 @@ class GmailBulkMover(
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
 
-    private var job: Job? = null
-
     val isRunning: Boolean get() = _state.value is State.Running
+
+    val lastMoved: Int
+        get() = when (val s = _state.value) {
+            is State.Running -> s.moved
+            is State.Done -> s.moved
+            else -> 0
+        }
+
+    val lastTotal: Int
+        get() = when (val s = _state.value) {
+            is State.Running -> s.total
+            is State.Done -> s.total
+            else -> 0
+        }
 
     fun start(rawGmailQuery: String, knownTotal: Int) {
         if (isRunning) return
         _state.value = State.Running(0, knownTotal.coerceAtLeast(0))
-        job = scope.launch {
-            val address = credentials.address()
-            val password = credentials.appPassword()
-            if (address.isNullOrBlank() || password.isNullOrBlank()) {
-                _state.value = State.Done(0, 0, "Set up your Gmail account first.")
-                return@launch
-            }
-            val outcome = runCatching {
-                gmail.moveAllMatching(address, password, rawGmailQuery) { moved, total ->
-                    _state.value = State.Running(moved, total)
-                }
-            }
-            _state.value = outcome.fold(
-                onSuccess = { State.Done(it.moved, it.total, it.error) },
-                onFailure = { e ->
-                    if (e is kotlinx.coroutines.CancellationException) {
-                        val r = _state.value as? State.Running
-                        State.Done(r?.moved ?: 0, r?.total ?: 0, "Stopped. Run it again to continue.")
-                    } else {
-                        State.Done(0, 0, (e as? GmailError)?.message ?: e.message ?: "Bulk move failed.")
-                    }
-                },
-            )
-        }
+        val request = OneTimeWorkRequestBuilder<BulkMoveWorker>()
+            .setInputData(workDataOf(BulkMoveWorker.KEY_QUERY to rawGmailQuery))
+            .build()
+        WorkManager.getInstance(appContext)
+            .enqueueUniqueWork(BulkMoveWorker.UNIQUE_NAME, ExistingWorkPolicy.REPLACE, request)
     }
 
     fun cancel() {
-        job?.cancel()
+        WorkManager.getInstance(appContext).cancelUniqueWork(BulkMoveWorker.UNIQUE_NAME)
     }
 
     fun acknowledge() {
         if (_state.value is State.Done) _state.value = State.Idle
+    }
+
+    // --- called by BulkMoveWorker ---
+
+    fun publishProgress(moved: Int, total: Int) {
+        _state.value = State.Running(moved, total)
+    }
+
+    fun publishDone(moved: Int, total: Int, error: String?) {
+        _state.value = State.Done(moved, total, error)
     }
 }

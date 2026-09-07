@@ -45,9 +45,7 @@ class AppContainer(context: Context) {
 
     val emailCredentialStore: EmailCredentialStore by lazy { EmailCredentialStore(appContext) }
     val gmailClient: GmailImapClient by lazy { GmailImapClient() }
-    val gmailBulkMover: GmailBulkMover by lazy {
-        GmailBulkMover(gmailClient, emailCredentialStore, appScope)
-    }
+    val gmailBulkMover: GmailBulkMover by lazy { GmailBulkMover(appContext) }
     val cacheInspector: CacheInspector by lazy { CacheInspector(appContext) }
 
     val updateRepository: UpdateRepository by lazy {

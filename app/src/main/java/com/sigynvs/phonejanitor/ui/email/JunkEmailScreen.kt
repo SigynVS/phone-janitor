@@ -137,6 +137,16 @@ fun JunkEmailScreen(onBack: () -> Unit) {
                     moved = running.moved,
                     total = running.total,
                     onStop = vm::cancelBulk,
+                    onOpenAppSettings = {
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(
+                                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    android.net.Uri.fromParts("package", context.packageName, null),
+                                ),
+                            )
+                        }
+                    },
                     modifier = Modifier.align(Alignment.Center),
                 )
 
@@ -276,6 +286,7 @@ private fun BulkProgress(
     moved: Int,
     total: Int,
     onStop: () -> Unit,
+    onOpenAppSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -301,7 +312,16 @@ private fun BulkProgress(
         } else {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(6.dp))
         }
-        OutlinedButton(onClick = onStop) { Text("Stop") }
+        Text(
+            "Runs in the background with a notification. If it stalls when the screen is off, " +
+                "set this app's battery usage to Unrestricted.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onStop) { Text("Stop") }
+            TextButton(onClick = onOpenAppSettings) { Text("App settings") }
+        }
     }
 }
 

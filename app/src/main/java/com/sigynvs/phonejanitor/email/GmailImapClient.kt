@@ -202,36 +202,47 @@ class GmailImapClient {
             val allMail = openFolder(store, "\\All", "[Gmail]/All Mail", Folder.READ_WRITE)
             try {
                 val trash = resolveFolder(store, "\\Trash", "[Gmail]/Trash")
-                val uids = rawUidSearch(allMail, rawGmailQuery)
-                val total = uids.size
-                if (total == 0) return@withContext MoveAllOutcome(0, 0, null)
 
                 var moved = 0
+                var grandTotal = -1
                 var failure: String? = null
-                for (chunk in uids.chunked(MOVE_CHUNK)) {
+
+                // Re-search after each full pass so nothing left behind (index lag, transient
+                // failures) is missed. Stop when a pass moves nothing.
+                pass@ while (true) {
                     ensureActive()
-                    try {
-                        val messages = (allMail as UIDFolder)
-                            .getMessagesByUID(chunk.toLongArray())
-                            .filterNotNull()
-                            .toTypedArray()
-                        if (messages.isNotEmpty()) {
-                            allMail.copyMessages(messages, trash)
-                            runCatching {
-                                allMail.setFlags(messages, Flags(Flags.Flag.DELETED), true)
-                                allMail.expunge()
+                    val uids = rawUidSearch(allMail, rawGmailQuery)
+                    if (grandTotal < 0) grandTotal = uids.size
+                    if (uids.isEmpty()) break@pass
+
+                    var movedThisPass = 0
+                    for (chunk in uids.chunked(MOVE_CHUNK)) {
+                        ensureActive()
+                        try {
+                            val messages = (allMail as UIDFolder)
+                                .getMessagesByUID(chunk.toLongArray())
+                                .filterNotNull()
+                                .toTypedArray()
+                            if (messages.isNotEmpty()) {
+                                allMail.copyMessages(messages, trash)
+                                runCatching {
+                                    allMail.setFlags(messages, Flags(Flags.Flag.DELETED), true)
+                                    allMail.expunge()
+                                }
+                                moved += messages.size
+                                movedThisPass += messages.size
                             }
-                            moved += messages.size
+                            onProgress(moved, grandTotal.coerceAtLeast(moved))
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (me: MessagingException) {
+                            failure = me.toGmailError().message
+                            break@pass
                         }
-                        onProgress(moved, total)
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (me: MessagingException) {
-                        failure = me.toGmailError().message
-                        break
                     }
+                    if (movedThisPass == 0) break@pass
                 }
-                MoveAllOutcome(moved, total, failure)
+                MoveAllOutcome(moved, grandTotal.coerceAtLeast(moved), failure)
             } finally {
                 runCatching { allMail.close(true) }
             }
